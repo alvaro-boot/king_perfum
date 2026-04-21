@@ -81,6 +81,48 @@ export class VentasService {
     }
   }
 
+  private async calcularGananciaDesdeLineas(
+    lineas: { productoId: number; cantidad: number; precioUnitario: number | null }[],
+  ): Promise<number> {
+    if (!lineas.length) return 0;
+    const ids = Array.from(new Set(lineas.map((l) => l.productoId)));
+    const productos = await this.productoRepository.findBy({ id: In(ids) });
+    const productoPorId = new Map(productos.map((p) => [p.id, p]));
+
+    return lineas.reduce((total, linea) => {
+      const producto = productoPorId.get(linea.productoId);
+      if (!producto) {
+        throw new BadRequestException(
+          `Producto con id ${linea.productoId} no encontrado`,
+        );
+      }
+      const precioVenta = linea.precioUnitario ?? producto.precioDeVenta;
+      const gananciaUnitaria = precioVenta - producto.precioCompra;
+      return total + gananciaUnitaria * linea.cantidad;
+    }, 0);
+  }
+
+  private async calcularGananciaDesdeProductoIds(
+    productoIds: number[],
+  ): Promise<number> {
+    if (!productoIds.length) return 0;
+    const unidadesPorProducto = this.contarUnidadesPorProducto(productoIds);
+    const idsUnicos = Array.from(unidadesPorProducto.keys());
+    const productos = await this.productoRepository.findBy({ id: In(idsUnicos) });
+    const productoPorId = new Map(productos.map((p) => [p.id, p]));
+
+    let totalGanancia = 0;
+    for (const [productoId, cantidad] of unidadesPorProducto) {
+      const producto = productoPorId.get(productoId);
+      if (!producto) {
+        throw new BadRequestException(`Producto con id ${productoId} no encontrado`);
+      }
+      totalGanancia += (producto.precioDeVenta - producto.precioCompra) * cantidad;
+    }
+
+    return totalGanancia;
+  }
+
   async create(createVentaDto: CreateVentaDto): Promise<Venta> {
     const tipoVenta = await this.tipoDeVentaRepository.findOne({
       where: { id: createVentaDto.tipo_de_venta_id },
@@ -95,6 +137,7 @@ export class VentasService {
     const clienteId = createVentaDto.cliente_id ?? null;
 
     let valorTotal: number;
+    let gananciaVenta = 0;
     let lineasParaGuardar: { productoId: number; cantidad: number; precioUnitario: number | null }[] = [];
 
     if (createVentaDto.productos?.length) {
@@ -116,6 +159,7 @@ export class VentasService {
         (sum, l) => sum + l.cantidad * (l.precioUnitario ?? 0),
         0,
       );
+      gananciaVenta = await this.calcularGananciaDesdeLineas(lineasParaGuardar);
     } else {
       const productoIds = createVentaDto.producto_ids ?? [];
       await this.descontarStock(productoIds);
@@ -123,6 +167,7 @@ export class VentasService {
       for (const productoId of productoIds) {
         lineasParaGuardar.push({ productoId, cantidad: 1, precioUnitario: null });
       }
+      gananciaVenta = await this.calcularGananciaDesdeProductoIds(productoIds);
     }
 
     const venta = this.ventaRepository.create({
@@ -163,7 +208,7 @@ export class VentasService {
     }
 
     const porcentaje = 40;
-    const valorComision = Math.round(valorTotal * (porcentaje / 100));
+    const valorComision = Math.round(gananciaVenta * (porcentaje / 100));
 
     const comision = this.comisionRepository.create({
       ventaId: ventaGuardada.id,
@@ -268,14 +313,23 @@ export class VentasService {
       }),
     });
 
-    // Si se actualiza explícitamente el valor_total, recalcular la comisión existente.
-    if (updateVentaDto.valor_total !== undefined) {
-      const comision = await this.comisionRepository.findOne({ where: { ventaId: id } });
-      if (comision) {
-        const valorComision = Math.round(updateVentaDto.valor_total * (comision.porcentaje / 100));
-        comision.valorComision = valorComision;
-        await this.comisionRepository.save(comision);
-      }
+    // Recalcular comisión sobre la ganancia real de la venta.
+    const comision = await this.comisionRepository.findOne({ where: { ventaId: id } });
+    if (comision) {
+      const ventaActualizada = await this.findOne(id);
+      const lineas = (ventaActualizada.productosDeLaVenta ?? []).map((pv) => ({
+        productoId: pv.productoId,
+        cantidad: pv.cantidad ?? 1,
+        precioUnitario: pv.precioUnitario ?? pv.producto?.precioDeVenta ?? null,
+      }));
+      const gananciaVenta =
+        lineas.length > 0
+          ? await this.calcularGananciaDesdeLineas(lineas)
+          : 0;
+      comision.valorComision = Math.round(
+        gananciaVenta * (comision.porcentaje / 100),
+      );
+      await this.comisionRepository.save(comision);
     }
 
     return this.findOne(id);
