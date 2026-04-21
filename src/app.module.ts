@@ -16,7 +16,7 @@ import { VentasModule } from './modules/ventas/ventas.module';
 import { ProductoDeLaVentaModule } from './modules/producto-de-la-venta/producto-de-la-venta.module';
 import { ComisionesModule } from './modules/comisiones/comisiones.module';
 
-type PostgresConnectionConfig = {
+type MysqlConnectionConfig = {
   host: string;
   port: number;
   username: string;
@@ -24,21 +24,21 @@ type PostgresConnectionConfig = {
   database: string;
 };
 
-function resolvePostgresConnection(): PostgresConnectionConfig {
-  const defaultConfig: PostgresConnectionConfig = {
+function resolveMysqlConnection(): MysqlConnectionConfig {
+  const defaultConfig: MysqlConnectionConfig = {
     host: process.env.DB_HOST || 'localhost',
-    port: parseInt(process.env.DB_PORT || '5432', 10),
-    username: process.env.DB_USERNAME || 'postgres',
+    port: parseInt(process.env.DB_PORT || '3306', 10),
+    username: process.env.DB_USERNAME || 'root',
     password: process.env.DB_PASSWORD || '',
     database: process.env.DB_DATABASE || 'king_perfum',
   };
 
   // Soporta configurar la BD con una URL completa tipo:
-  // postgresql://usuario:password@host:puerto/base
+  // mysql://usuario:password@host:puerto/base
   const rawDbHost = process.env.DB_HOST;
   const databaseUrl =
     process.env.DATABASE_URL ||
-    (rawDbHost && /^postgres(ql)?:\/\//i.test(rawDbHost) ? rawDbHost : undefined);
+    (rawDbHost && /^mysql:\/\//i.test(rawDbHost) ? rawDbHost : undefined);
 
   if (!databaseUrl) return defaultConfig;
 
@@ -59,8 +59,8 @@ function resolvePostgresConnection(): PostgresConnectionConfig {
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forRoot({
-      type: 'postgres',
-      ...resolvePostgresConnection(),
+      type: 'mysql',
+      ...resolveMysqlConnection(),
       autoLoadEntities: true,
       synchronize: process.env.NODE_ENV !== 'production',
       ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
